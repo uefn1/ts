@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>GitHub Release .ts Player</title>
   <link rel="stylesheet" href="./style.css">
-  <!-- v1.8.0 以降で iOS Safari 17.1+ の ManagedMediaSource に対応 -->
-  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.1/dist/mpegts.min.js"></script>
+  <!--
+    v1.8.2 で iOS 26 / Safari における MediaSource / ManagedMediaSource の
+    検出バグ（Object is not a constructor）が修正されています[reference:2]。
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.2/dist/mpegts.min.js"></script>
 </head>
 <body>
   <h1>GitHub Release .ts Player</h1>
