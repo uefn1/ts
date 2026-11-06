@@ -11,8 +11,10 @@
   <h1>GitHub Release .ts Player</h1>
 
   <form id="form">
-    <label>Repo (owner/repo): <input id="repo" placeholder="owner/repo" required></label>
-    <label>Tag: <input id="tag" placeholder="v1.0.0" required></label>
+    <label>Release URL:
+      <input id="releaseUrl" type="url" size="50"
+             placeholder="https://github.com/owner/repo/releases/tag/v1.0.0" required>
+    </label>
     <button type="submit">再生</button>
   </form>
 
