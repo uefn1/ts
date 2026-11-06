@@ -2,24 +2,27 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>GitHub Release .ts Player</title>
   <link rel="stylesheet" href="./style.css">
-  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.2/dist/mpegts.min.js"></script>
+  <!-- v1.8.0 以降で iOS Safari 17.1+ の ManagedMediaSource に対応 -->
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.1/dist/mpegts.min.js"></script>
 </head>
 <body>
   <h1>GitHub Release .ts Player</h1>
 
   <form id="form">
     <label>Release URL:
-      <input id="releaseUrl" type="url" size="50"
+      <input id="releaseUrl" type="url" inputmode="url" size="50"
              placeholder="https://github.com/owner/repo/releases/tag/v1.0.0" required>
     </label>
     <button type="submit">再生</button>
   </form>
 
-  <p id="status"></p>
-  <video id="video" controls playsinline style="width:100%;max-width:960px;"></video>
+  <p id="status" role="status"></p>
+  <!-- iOS Safari では playsinline と muted が必須 -->
+  <video id="video" controls playsinline muted
+         style="width:100%;max-width:960px;"></video>
 
   <script src="./app.js"></script>
 </body>
