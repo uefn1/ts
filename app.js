@@ -15,14 +15,6 @@ $("form").addEventListener("submit", async (e) => {
   }
 });
 
-/**
- * GitHubリリースURLをパースする
- * 対応形式:
- *   https://github.com/{owner}/{repo}/releases/tag/{tag}
- *   https://github.com/{owner}/{repo}/releases/tag/{tag}/  (末尾スラッシュ)
- *   https://github.com/{owner}/{repo}/releases/tag/{tag}?foo=bar
- *   github.com/{owner}/{repo}/releases/tag/{tag}          (スキーム省略)
- */
 function parseReleaseUrl(input) {
   let url;
   try {
@@ -43,22 +35,22 @@ function parseReleaseUrl(input) {
   }
 
   const [, owner, repo, rawTag] = m;
-  const tag = decodeURIComponent(rawTag);
-  return { owner, repo, tag };
+  return { owner, repo, tag: decodeURIComponent(rawTag) };
 }
 
 /**
- * iOS Safari の MSE / ManagedMediaSource 対応状況を判定する
+ * ブラウザの再生能力を判定する
+ * エラーメッセージを具体的にすることで、原因の切り分けを容易にする
  */
-function checkVideoPlaybackSupport() {
-  // iOS 17.1+ では ManagedMediaSource が利用可能
-  const hasManagedMSE = "ManagedMediaSource" in window;
-  // デスクトップや iPadOS など従来の MSE
-  const hasNativeMSE = mpegts.getFeatureList().mseLivePlayback;
+function checkPlaybackSupport() {
+  const hasManagedMSE = typeof self.ManagedMediaSource === "function";
+  const hasNativeMSE =
+    typeof self.MediaSource === "function" &&
+    mpegts.getFeatureList().mseLivePlayback;
 
   if (!hasManagedMSE && !hasNativeMSE) {
     throw new Error(
-      "このブラウザは動画再生に必要なAPIに対応していません。" +
+      "このブラウザは動画再生に必要な MediaSource API に対応していません。" +
         "iOS 17.1 以降の Safari、または最新のデスクトップブラウザでお試しください。"
     );
   }
@@ -68,7 +60,6 @@ function checkVideoPlaybackSupport() {
 async function play(owner, repo, tag) {
   $("status").textContent = `リリース情報を取得中... (${owner}/${repo} @ ${tag})`;
 
-  // 1. リリース情報から .ts アセットを特定
   const res = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`
   );
@@ -79,55 +70,42 @@ async function play(owner, repo, tag) {
 
   const release = await res.json();
   const assets = release.assets.filter((a) => a.name.endsWith(".ts"));
+  if (assets.length === 0) throw new Error(".ts アセットが見つかりません");
 
-  if (assets.length === 0) {
-    throw new Error(".ts アセットが見つかりません");
-  }
   const asset = assets[0];
-
-  // 2. ブラウザの再生能力をチェック（iOS Safari では特に重要）
-  const { hasManagedMSE } = checkVideoPlaybackSupport();
+  const { hasManagedMSE } = checkPlaybackSupport();
 
   const video = $("video");
   if (window.__player) {
     window.__player.destroy();
     window.__player = null;
   }
-
-  // iOS Safari ではユーザー操作なしの play() が拒否されることがあるため、
-  // muted 状態を明示的に維持する
   video.muted = true;
 
-  /*
-   * CORS 対策:
-   * browser_download_url は release-assets.githubusercontent.com にリダイレクトされ、
-   * CORS ヘッダーが付与されないため使用しない。
-   * GitHub API のアセットエンドポイントは Accept: application/octet-stream を付けると
-   * リダイレクト先も含めて CORS ヘッダーが返る。
-   */
+  // CORS 対策: API アセットエンドポイント + Accept ヘッダー
   const apiUrl =
     `https://api.github.com/repos/${owner}/${repo}/releases/assets/${asset.id}`;
 
-  const candidate = {
-    url: apiUrl,
-    headers: { Accept: "application/octet-stream" },
-  };
-
   try {
-    await tryPlay(video, candidate, hasManagedMSE);
+    await tryPlay(video, {
+      url: apiUrl,
+      headers: { Accept: "application/octet-stream" },
+    });
     $("status").textContent =
       `再生中: ${asset.name} (${(asset.size / 1024 / 1024).toFixed(1)} MB)` +
       (hasManagedMSE ? " [iOS ManagedMediaSource]" : "");
   } catch (e) {
     console.error("再生失敗:", e);
-    throw new Error(
-      `再生に失敗しました (${e.message})。` +
-        "動画のコーデックが H.264/AAC であること、iOS 17.1 以降であることをご確認ください。"
-    );
+    // InvalidStateError は SourceBuffer の状態管理に起因する
+    const hint =
+      e.name === "InvalidStateError"
+        ? "（MSE バッファの初期化に失敗しました。ページを再読み込みしてから再度お試しください）"
+        : "（動画のコーデックが H.264/AAC であること、iOS 17.1 以降であることをご確認ください）";
+    throw new Error(`再生に失敗しました: ${e.message} ${hint}`);
   }
 }
 
-function tryPlay(video, candidate, hasManagedMSE) {
+function tryPlay(video, candidate) {
   return new Promise((resolve, reject) => {
     const player = mpegts.createPlayer(
       {
@@ -138,11 +116,10 @@ function tryPlay(video, candidate, hasManagedMSE) {
         ...(candidate.headers ? { headers: candidate.headers } : {}),
       },
       {
-        // iOS Safari (ManagedMediaSource) では Worker 経由の MSE を有効化
         enableWorker: true,
-        enableWorkerForMSE: hasManagedMSE,
-        // Range リクエストは CORS プリフライトを誘発するため使用しない
-        // seekType: "range" は指定しない
+        // enableWorkerForMSE は iOS Safari で ManagedMediaSource との
+        // 組み合わせにおいて不安定なため、デフォルト（false）のままにする[reference:3]。
+        // seekType: "range" も CORS プリフライトを誘発するため指定しない。
       }
     );
 
@@ -154,17 +131,18 @@ function tryPlay(video, candidate, hasManagedMSE) {
     const onError = (type, detail) => {
       cleanup();
       player.destroy();
-      reject(new Error(`${type}: ${detail}`));
+      // detail が文字列でない場合（オブジェクトなど）も安全にメッセージ化する
+      const message = typeof detail === "string" ? detail : (detail?.message ?? type);
+      const err = new Error(message);
+      // mpegts.js が投げるエラー種別を保持して呼び出し側で判定できるようにする
+      err.name = type;
+      reject(err);
     };
 
     const onLoaded = () => {
       cleanup();
       window.__player = player;
-      // iOS Safari では自動再生がブロックされる場合があるため、
-      // ユーザーが再度再生ボタンを押せるようにする
-      video.play().catch((err) => {
-        console.warn("自動再生がブロックされました:", err);
-      });
+      video.play().catch((err) => console.warn("自動再生がブロックされました:", err));
       resolve();
     };
 
@@ -173,8 +151,6 @@ function tryPlay(video, candidate, hasManagedMSE) {
 
     player.attachMediaElement(video);
     player.load();
-
-    // 読み込み直後に play() を試みる（muted なので iOS でも許可されやすい）
     player.play().catch((e) => console.warn("play() rejected:", e));
   });
 }
