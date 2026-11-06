@@ -1,15 +1,13 @@
 const $ = (id) => document.getElementById(id);
 
-// URL パラメータで事前入力（?repo=owner/repo&tag=v1.0.0）
+// ?url=... で事前入力
 const params = new URLSearchParams(location.search);
-if (params.get("repo")) $("repo").value = params.get("repo");
-if (params.get("tag"))  $("tag").value  = params.get("tag");
+if (params.get("url")) $("releaseUrl").value = params.get("url");
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const [owner, repo] = $("repo").value.trim().split("/");
-  const tag = $("tag").value.trim();
   try {
+    const { owner, repo, tag } = parseReleaseUrl($("releaseUrl").value.trim());
     await play(owner, repo, tag);
   } catch (err) {
     $("status").textContent = `エラー: ${err.message}`;
@@ -17,17 +15,60 @@ $("form").addEventListener("submit", async (e) => {
   }
 });
 
-async function play(owner, repo, tag) {
-  $("status").textContent = "リリース情報を取得中...";
+/**
+ * GitHubリリースURLをパースする
+ * 対応形式:
+ *   https://github.com/{owner}/{repo}/releases/tag/{tag}
+ *   https://github.com/{owner}/{repo}/releases/tag/{tag}/  (末尾スラッシュ)
+ *   https://github.com/{owner}/{repo}/releases/tag/{tag}?foo=bar
+ *   github.com/{owner}/{repo}/releases/tag/{tag}          (スキーム省略)
+ */
+function parseReleaseUrl(input) {
+  let url;
+  try {
+    url = new URL(input.includes("://") ? input : `https://${input}`);
+  } catch {
+    throw new Error("URLの形式が正しくありません");
+  }
 
-  // 1. リリース情報から .ts アセットを特定（API呼び出しはこの1回だけ）
+  if (!/(^|\.)github\.com$/.test(url.hostname)) {
+    throw new Error("github.com のURLを入力してください");
+  }
+
+  // /owner/repo/releases/tag/tag を抽出
+  const m = url.pathname.match(/^\/([^/]+)\/([^/]+)\/releases\/tag\/(.+?)\/?$/);
+  if (!m) {
+    throw new Error(
+      "リリースのURLを入力してください（例: https://github.com/owner/repo/releases/tag/v1.0.0）"
+    );
+  }
+
+  const [, owner, repo, rawTag] = m;
+  // タグにエンコードされた文字（%2Fなど）をデコード
+  const tag = decodeURIComponent(rawTag);
+  return { owner, repo, tag };
+}
+
+async function play(owner, repo, tag) {
+  $("status").textContent = `リリース情報を取得中... (${owner}/${repo} @ ${tag})`;
+
+  // 1. リリース情報から .ts アセットを特定
   const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`
+    `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`
   );
+  if (res.status === 404) {
+    throw new Error(`リリースが見つかりません: ${owner}/${repo} @ ${tag}`);
+  }
   if (!res.ok) throw new Error(`リリース取得失敗 (${res.status})`);
+
   const release = await res.json();
-  const asset = release.assets.find((a) => a.name.endsWith(".ts"));
-  if (!asset) throw new Error(".ts アセットが見つかりません");
+  const assets = release.assets.filter((a) => a.name.endsWith(".ts"));
+
+  if (assets.length === 0) {
+    throw new Error(".ts アセットが見つかりません");
+  }
+  // 複数ある場合は最初の .ts を使用（必要なら選択UIを追加）
+  const asset = assets[0];
 
   if (!mpegts.getFeatureList().mseLivePlayback) {
     throw new Error("このブラウザは MSE に対応していません");
@@ -41,9 +82,7 @@ async function play(owner, repo, tag) {
 
   // 2. 候補URLを順に試す
   const candidates = [
-    // ① browser_download_url を直接使う（release-assets は CORS 対応）
     { url: asset.browser_download_url },
-    // ② 失敗時: API エンドポイント + Accept ヘッダー
     {
       url: `https://api.github.com/repos/${owner}/${repo}/releases/assets/${asset.id}`,
       headers: { Accept: "application/octet-stream" },
@@ -53,9 +92,10 @@ async function play(owner, repo, tag) {
   let lastError = null;
   for (const c of candidates) {
     try {
-      await tryPlay(video, c, asset);
+      await tryPlay(video, c);
       $("status").textContent =
-        `再生中: ${asset.name} (${(asset.size / 1024 / 1024).toFixed(1)} MB)`;
+        `再生中: ${asset.name} (${(asset.size / 1024 / 1024).toFixed(1)} MB)` +
+        (assets.length > 1 ? ` ※他${assets.length - 1}件の.tsあり` : "");
       return;
     } catch (e) {
       console.warn("再生失敗:", c.url, e);
@@ -65,7 +105,7 @@ async function play(owner, repo, tag) {
   throw new Error(`再生に失敗しました (${lastError?.message ?? "unknown"})`);
 }
 
-function tryPlay(video, candidate, asset) {
+function tryPlay(video, candidate) {
   return new Promise((resolve, reject) => {
     const player = mpegts.createPlayer(
       {
@@ -77,7 +117,7 @@ function tryPlay(video, candidate, asset) {
       },
       {
         enableWorker: true,
-        seekType: "range", // Range リクエストでシーク
+        seekType: "range",
       }
     );
 
